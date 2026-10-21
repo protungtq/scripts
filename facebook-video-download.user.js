@@ -3,7 +3,7 @@
 // @name:en      Facebook HD Video Downloader
 // @namespace    https://so1.asia/
 // @homepageURL  https://so1.asia/
-// @version      1.4.0
+// @version      1.5.0
 // @description  Gắn nút tải vào mọi video trên Facebook (Feed, Watch, Reel và cả Story). Kiến trúc 3 lớp như extension: lớp chạy trong trang vá trình phát VideoPlayerRelay để lấy ID và link HD qua GraphQL nội bộ, lớp Tampermonkey nhận link và tải file xuống; thêm tầng quét thẻ video dự phòng cho mọi video trên màn hình.
 // @description:en Adds a download button to every Facebook video (Feed, Watch, Reels and Stories). A page-context layer patches the VideoPlayerRelay player to fetch HD URLs via Facebook's internal GraphQL, the userscript layer downloads the file, plus a DOM fallback for any on-screen video.
 // @author       Game8
@@ -11,6 +11,7 @@
 // @match        *://*.facebook.com/*
 // @run-at       document-start
 // @grant        GM_download
+// @grant        GM_addElement
 // ==/UserScript==
 
 (function () {
@@ -140,6 +141,7 @@
     }
 
     function wrapVideoPlayer(original, context, renderArgs) {
+      window.__fbDlPlayerSeen = (window.__fbDlPlayerSeen || 0) + 1;
       var React = getReact();
       if (!React) return original.apply(context, renderArgs);
       var player = original.apply(context, renderArgs);
@@ -365,14 +367,23 @@
     }
   });
 
-  // Chèn lớp trang vào page context.
+  // Chèn lớp trang vào page context: ưu tiên kênh GM_addElement của
+  // Tampermonkey, hụt mới chèn thẻ script thường.
   var pageInjected = false;
   try {
     unsafeWindow.__FBDL_CONFIG = { iconDownload: ICON_DOWNLOAD, iconSpinner: ICON_SPINNER };
-    var scriptEl = document.createElement('script');
-    scriptEl.textContent = '(' + pageMain.toString() + ')();';
-    (document.head || document.documentElement).appendChild(scriptEl);
-    scriptEl.remove();
+    var pageCode = '(' + pageMain.toString() + ')();';
+    if (typeof GM_addElement === 'function') {
+      try {
+        GM_addElement('script', { textContent: pageCode });
+      } catch (e) {}
+    }
+    if (!unsafeWindow.__fbDlPageHook) {
+      var scriptEl = document.createElement('script');
+      scriptEl.textContent = pageCode;
+      (document.head || document.documentElement).appendChild(scriptEl);
+      scriptEl.remove();
+    }
     pageInjected = !!unsafeWindow.__fbDlPageHook;
   } catch (e) {
     pageInjected = false;
@@ -484,6 +495,8 @@
 
   /* ---------- Dự phòng cuối: hook qua unsafeWindow (khi lớp trang bị chặn) ---------- */
 
+  var sandboxHookDone = false;
+
   function installSandboxHook() {
     function makePatch(moduleName, wrapExport) {
       return function (_thisArg, dArgs) {
@@ -527,6 +540,7 @@
         return React.createElement(
           'a',
           {
+            className: 'fbdl-download-btn',
             title: 'Tải video',
             'aria-label': 'Tải video Facebook',
             style: {
@@ -606,6 +620,7 @@
             realD = v;
           },
         });
+        sandboxHookDone = true;
       } catch (e) {}
     } else if (typeof unsafeWindow.__d === 'function' && !unsafeWindow.__d.__fbDlHooked) {
       var origD = unsafeWindow.__d;
@@ -616,12 +631,28 @@
       hookedD.__fbDlHooked = true;
       try {
         unsafeWindow.__d = hookedD;
+        sandboxHookDone = true;
       } catch (e) {}
     }
   }
 
   if (!pageInjected) {
     installSandboxHook();
+    // Đợi thêm: lớp trang có thể sống dậy muộn, hoặc __d xuất hiện sau
+    // thì móc lại cho tới khi bám được.
+    var hookPolls = 0;
+    var hookTimer = setInterval(function () {
+      hookPolls++;
+      try {
+        if (unsafeWindow.__fbDlPageHook) {
+          pageInjected = true;
+          clearInterval(hookTimer);
+          return;
+        }
+      } catch (e) {}
+      if (!sandboxHookDone) installSandboxHook();
+      if (hookPolls >= 40) clearInterval(hookTimer);
+    }, 500);
   }
 
   /* ================================================================
@@ -654,8 +685,46 @@
     return m ? m[1] : '';
   }
 
-  // Tìm ID video: URL trang trước, rồi leo dần lên các khung cha của
-  // video và quét link ở từng tầng (bài Feed bọc trong [role=article]).
+  // Đào ID từ dữ liệu React (fiber) gắn trên chính thẻ <video>: leo lên
+  // cây component tìm props chứa video.id / videoID.
+  function findVideoIdInFiber(el) {
+    try {
+      var keys = Object.keys(el);
+      var key = '';
+      for (var i = 0; i < keys.length; i++) {
+        if (
+          keys[i].indexOf('__reactFiber') === 0 ||
+          keys[i].indexOf('__reactInternalInstance') === 0
+        ) {
+          key = keys[i];
+          break;
+        }
+      }
+      if (!key) return '';
+      var fiber = el[key];
+      var depth = 0;
+      while (fiber && depth < 90) {
+        var props = fiber.memoizedProps || fiber.pendingProps;
+        if (props) {
+          var cand = '';
+          if (props.video && (props.video.id || props.video.__id)) {
+            cand = props.video.id || props.video.__id;
+          } else if (props.videoID) {
+            cand = props.videoID;
+          } else if (props.videoId) {
+            cand = props.videoId;
+          }
+          if (cand && /^\d{6,}$/.test(String(cand))) return String(cand);
+        }
+        fiber = fiber.return;
+        depth++;
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  // Tìm ID video: URL trang trước, rồi dữ liệu React trên thẻ video,
+  // rồi leo dần lên các khung cha quét link ở từng tầng.
   function findVideoIdNear(video) {
     try {
       var u = new URL(location.href);
@@ -664,6 +733,8 @@
       var pm = location.pathname.match(/\/(?:videos|reel)\/(\d{6,})/);
       if (pm) return pm[1];
     } catch (e) {}
+    var fiberId = findVideoIdInFiber(video);
+    if (fiberId) return fiberId;
     var node = video;
     for (var depth = 0; node && depth < 9; depth++) {
       if (node.querySelectorAll) {
@@ -752,5 +823,48 @@
     startDomFallback();
   } else {
     document.addEventListener('DOMContentLoaded', startDomFallback, { once: true });
+  }
+
+  /* ---- Bảng trạng thái tự chẩn đoán (tạm thời, bấm vào để ẩn) ---- */
+  function startBadge() {
+    if (document.getElementById('fbdl-badge')) return;
+    var badge = document.createElement('div');
+    badge.id = 'fbdl-badge';
+    badge.title = 'Bấm để ẩn';
+    badge.style.cssText =
+      'position:fixed;left:12px;bottom:12px;z-index:2147483647;background:rgba(17,24,39,.92);' +
+      'color:#d1fae5;font:12px/1.5 ui-monospace,monospace;padding:6px 10px;border-radius:8px;' +
+      'cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4)';
+    badge.addEventListener('click', function () {
+      badge.remove();
+    });
+    document.documentElement.appendChild(badge);
+    var render = function () {
+      var page = false;
+      var seen = 0;
+      try {
+        page = !!unsafeWindow.__fbDlPageHook;
+        seen = unsafeWindow.__fbDlPlayerSeen || 0;
+      } catch (e) {}
+      var pBtns = document.querySelectorAll('.fbdl-download-btn').length;
+      var dBtns = document.querySelectorAll('.fbdl-dom-btn').length;
+      badge.textContent =
+        'FB-DL v1.5.0 · lớp trang: ' +
+        (page ? 'SỐNG' : 'CHẾT') +
+        ' · player đã vá: ' +
+        seen +
+        ' · nút: ' +
+        pBtns +
+        '+' +
+        dBtns;
+    };
+    render();
+    setInterval(render, 2000);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startBadge, { once: true });
+  } else {
+    startBadge();
   }
 })();
