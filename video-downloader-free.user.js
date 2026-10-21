@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name         Tải Video Miễn Phí
-// @namespace    be.local
-// @version      1.1.0
+// @namespace    https://so1.asia/
+// @homepageURL  https://so1.asia/
+// @version      1.1.1
 // @description  Tự động phát hiện video/audio trên trang và tải về. Miễn phí 100%, không premium, không server.
 // @match        *://*/*
 // @grant        GM_download

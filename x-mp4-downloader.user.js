@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name         X.com — Nút tải video MP4 trong khung phát
-// @namespace    https://game8.info/
-// @version      1.1.0
+// @namespace    https://so1.asia/
+// @homepageURL  https://so1.asia/
+// @version      1.1.1
 // @description  Hiện nút tải MP4 đẹp ở góc phải khung video trên X.com. Bấm là tải MP4 về máy, tên file theo tài khoản + mã bài đăng, không mở tab mới.
 // @author       Be Soc
 // @match        https://x.com/*
