@@ -3,7 +3,7 @@
 // @name:en      Facebook HD Video Downloader
 // @namespace    https://so1.asia/
 // @homepageURL  https://so1.asia/
-// @version      1.0.2
+// @version      1.1.0
 // @description  Thêm nút tải xuống vào mọi video trên Facebook (Feed, Watch, Reel): bấm là tải bản HD (nếu có) về máy. Cơ chế port từ MonokaiToolkit — chỉ giữ phần tải video, bỏ hết reaction, bot Messenger, MQTT và theo dõi.
 // @description:en Adds a download button to every Facebook video player (Feed, Watch, Reels) and downloads the HD version when available.
 // @author       Game8
@@ -161,7 +161,7 @@
             position: 'absolute',
             width: 40,
             height: 40,
-            top: 10,
+            top: 56,
             right: 10,
             zIndex: 99999,
             backgroundColor: loading ? '#00000088' : '#00000044',
@@ -204,19 +204,26 @@
 
   var patches = [makeModulePatch('VideoPlayerRelay.react', wrapVideoPlayer)];
 
-  // Cài hook vào window.__d giống bản gốc: khi Facebook gán __d thật,
-  // giữ lại và bọc nó bằng hàm chạy các patch trước.
-  var realD = null;
+  function runPatches(thisArg, dArgs) {
+    try {
+      for (var i = 0; i < patches.length; i++) patches[i](thisArg, dArgs);
+    } catch (e) {
+      console.warn('[fb-dl] patch error:', e);
+    }
+  }
+
+  // Cài hook vào window.__d theo 2 tình huống:
+  // - Facebook chưa định nghĩa __d: cài sẵn getter/setter chờ như bản gốc.
+  // - Facebook đã định nghĩa __d trước khi script kịp chạy: bọc luôn
+  //   hàm hiện tại, để các module nạp sau (video Feed/Watch/Reel/Story
+  //   đều nạp lười khi cuộn tới) vẫn bị vá.
   if (typeof unsafeWindow.__d === 'undefined') {
+    var realD = null;
     Object.defineProperty(unsafeWindow, '__d', {
       configurable: true,
       get: function () {
         return function () {
-          try {
-            for (var i = 0; i < patches.length; i++) patches[i](this, arguments);
-          } catch (e) {
-            console.warn('[fb-dl] patch error:', e);
-          }
+          runPatches(this, arguments);
           return realD && realD.apply(this, arguments);
         };
       },
@@ -224,6 +231,18 @@
         realD = v;
       },
     });
+  } else if (typeof unsafeWindow.__d === 'function' && !unsafeWindow.__d.__fbDlHooked) {
+    var origD = unsafeWindow.__d;
+    var hookedD = function () {
+      runPatches(this, arguments);
+      return origD.apply(this, arguments);
+    };
+    hookedD.__fbDlHooked = true;
+    try {
+      unsafeWindow.__d = hookedD;
+    } catch (e) {
+      console.warn('[fb-dl] cannot wrap existing __d:', e);
+    }
   }
 
   // ---------- Nút dự phòng cho trang Watch / Reel / Videos ----------
