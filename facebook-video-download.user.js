@@ -3,7 +3,7 @@
 // @name:en      Facebook HD Video Downloader
 // @namespace    https://so1.asia/
 // @homepageURL  https://so1.asia/
-// @version      1.0.1
+// @version      1.0.2
 // @description  Thêm nút tải xuống vào mọi video trên Facebook (Feed, Watch, Reel): bấm là tải bản HD (nếu có) về máy. Cơ chế port từ MonokaiToolkit — chỉ giữ phần tải video, bỏ hết reaction, bot Messenger, MQTT và theo dõi.
 // @description:en Adds a download button to every Facebook video player (Feed, Watch, Reels) and downloads the HD version when available.
 // @author       Game8
@@ -161,7 +161,7 @@
             position: 'absolute',
             width: 40,
             height: 40,
-            top: 60,
+            top: 10,
             right: 10,
             zIndex: 99999,
             backgroundColor: loading ? '#00000088' : '#00000044',
