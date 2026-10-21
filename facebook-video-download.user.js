@@ -3,7 +3,7 @@
 // @name:en      Facebook HD Video Downloader
 // @namespace    https://so1.asia/
 // @homepageURL  https://so1.asia/
-// @version      1.2.0
+// @version      1.3.0
 // @description  Gắn nút tải vào mọi video trên Facebook (Feed, Watch, Reel và cả Story): ưu tiên lấy bản HD qua GraphQL nội bộ của Facebook, hụt thì tải thẳng từ nguồn video đang phát. Hai tầng như bản extension: vá trình phát React + quét mọi thẻ video trên trang.
 // @description:en Adds a download button to every Facebook video (Feed, Watch, Reels and Stories), preferring the HD URL from Facebook's internal GraphQL with a direct-source fallback.
 // @author       Game8
@@ -47,30 +47,46 @@
     try {
       dtsg = unsafeWindow.require('DTSGInitialData').token || '';
     } catch (e) {}
-    if (!dtsg) return Promise.reject(new Error('Không lấy được Facebook DTSG token.'));
+    if (!dtsg)
+      return Promise.reject(new Error('[token] Không lấy được Facebook DTSG token.'));
     var body = new URLSearchParams();
     body.set('doc_id', docId);
     body.set('variables', JSON.stringify(variables));
     body.set('fb_dtsg', dtsg);
     body.set('server_timestamps', 'true');
-    return fetch('https://www.facebook.com/api/graphql/', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    })
+    // Gọi bằng fetch CỦA TRANG Facebook (qua unsafeWindow) để điều kiện
+    // chạy giống hệt code trong trang như extension, tránh fetch của
+    // sandbox Tampermonkey bị Facebook từ chối ngầm.
+    var pageFetch = (unsafeWindow && unsafeWindow.fetch) || fetch;
+    return pageFetch
+      .call(unsafeWindow, 'https://www.facebook.com/api/graphql/', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      })
       .then(function (res) {
         return res.text();
       })
-      .then(function (text) {
-        // Facebook đôi khi trả tiền tố for(;;); trước JSON — phải bóc ra.
-        var firstLine = text.replace(/^for \(;;\);/, '').split('\n')[0];
-        var json = JSON.parse(firstLine);
-        if (json && json.errors && json.errors.length) {
-          throw new Error(json.errors[0].message || 'Facebook GraphQL error.');
+      .then(
+        function (text) {
+          // Facebook đôi khi trả tiền tố for(;;); trước JSON — phải bóc ra.
+          var firstLine = text.replace(/^for \(;;\);/, '').split('\n')[0];
+          var json;
+          try {
+            json = JSON.parse(firstLine);
+          } catch (e) {
+            throw new Error('[graphql] Phản hồi không phải JSON: ' + firstLine.slice(0, 80));
+          }
+          if (json && json.errors && json.errors.length) {
+            throw new Error('[graphql] ' + (json.errors[0].message || 'Facebook GraphQL error.'));
+          }
+          return json;
+        },
+        function (netErr) {
+          throw new Error('[graphql] Lỗi mạng khi gọi GraphQL: ' + (netErr && netErr.message ? netErr.message : netErr));
         }
-        return json;
-      });
+      );
   }
 
   // Lấy URL phát theo ID: ưu tiên HD, không có thì bản thường.
@@ -102,16 +118,29 @@
 
   function saveDownload(url, videoId) {
     var name = 'Facebook/' + (videoId ? 'fb-' + videoId : 'fb-video-' + Date.now()) + '.mp4';
+    toast('Đã lấy được link — đang tải video xuống…', 2600);
+    var anchorFallback = function () {
+      try {
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = name.split('/').pop();
+        a.target = '_blank';
+        a.rel = 'noopener';
+        document.documentElement.appendChild(a);
+        a.click();
+        a.remove();
+      } catch (e) {
+        window.open(url, '_blank');
+      }
+    };
     if (typeof GM_download === 'function') {
-      GM_download({
-        url: url,
-        name: name,
-        onerror: function () {
-          window.open(url, '_blank');
-        },
-      });
+      try {
+        GM_download({ url: url, name: name, onerror: anchorFallback });
+      } catch (e) {
+        anchorFallback();
+      }
     } else {
-      window.open(url, '_blank');
+      anchorFallback();
     }
   }
 
@@ -130,7 +159,9 @@
     };
     if (!videoId) {
       if (tryDirect()) return Promise.resolve();
-      return Promise.reject(new Error('Không lấy được URL video.'));
+      return Promise.reject(
+        new Error('[link] Không có ID video và nguồn phát không phải link trực tiếp (blob/DASH).')
+      );
     }
     return fetchPlayableUrl(videoId)
       .then(function (url) {
@@ -138,7 +169,8 @@
           saveDownload(url, videoId);
           return;
         }
-        if (!tryDirect()) throw new Error('Không lấy được URL video.');
+        if (!tryDirect())
+          throw new Error('[link] Facebook không trả link phát cho video này.');
       })
       .catch(function (err) {
         if (tryDirect()) return;
@@ -146,7 +178,7 @@
       });
   }
 
-  function toast(msg) {
+  function toast(msg, ms) {
     var el = document.createElement('div');
     el.textContent = msg;
     el.style.cssText =
@@ -156,7 +188,7 @@
     document.documentElement.appendChild(el);
     setTimeout(function () {
       el.remove();
-    }, 3600);
+    }, ms || 6000);
   }
 
   // ================================================================
