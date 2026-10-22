@@ -3,7 +3,7 @@
 // @name:en      Facebook HD Video Downloader
 // @namespace    https://so1.asia/
 // @homepageURL  https://so1.asia/
-// @version      1.5.0
+// @version      1.6.0
 // @description  Gắn nút tải vào mọi video trên Facebook (Feed, Watch, Reel và cả Story). Kiến trúc 3 lớp như extension: lớp chạy trong trang vá trình phát VideoPlayerRelay để lấy ID và link HD qua GraphQL nội bộ, lớp Tampermonkey nhận link và tải file xuống; thêm tầng quét thẻ video dự phòng cho mọi video trên màn hình.
 // @description:en Adds a download button to every Facebook video (Feed, Watch, Reels and Stories). A page-context layer patches the VideoPlayerRelay player to fetch HD URLs via Facebook's internal GraphQL, the userscript layer downloads the file, plus a DOM fallback for any on-screen video.
 // @author       Game8
@@ -300,6 +300,57 @@
         if (window.console) console.debug('[fb-dl] __d hook failed:', e);
       }
     }
+
+    // Duong 2 (v1.6.0): va thang module DA nap san trong bo nho trang.
+    // Userscript khong thang duoc cuoc dua giang moc __d nhu extension
+    // (module trinh phat thuong da dinh nghia xong truoc khi moc toi),
+    // nen ta doi xuat khau mac dinh cua module ngay trong registry:
+    // moi trinh phat mo ra sau do deu dung ban da va.
+    function tryPatchViaRequire() {
+      var mod = null;
+      try {
+        mod = window.require('VideoPlayerRelay.react');
+      } catch (e) {
+        return false;
+      }
+      if (!mod || typeof mod !== 'object' || typeof mod.default !== 'function') return false;
+      var original = mod.default;
+      if (original.__fbDlWrapped) {
+        window.__fbDlRequirePatched = true;
+        return true;
+      }
+      var wrapped = function () {
+        return wrapVideoPlayer(original, this, Array.prototype.slice.call(arguments));
+      };
+      wrapped.__fbDlWrapped = true;
+      try {
+        mod.default = wrapped;
+      } catch (e) {}
+      if (mod.default !== wrapped) {
+        try {
+          Object.defineProperty(mod, 'default', {
+            value: wrapped,
+            writable: true,
+            configurable: true,
+          });
+        } catch (e) {}
+      }
+      if (mod.default === wrapped) {
+        window.__fbDlRequirePatched = true;
+        return true;
+      }
+      window.__fbDlFrozen = true;
+      return false;
+    }
+
+    tryPatchViaRequire();
+    var requirePolls = 0;
+    var requireTimer = setInterval(function () {
+      requirePolls++;
+      if (tryPatchViaRequire() || requirePolls >= 90) clearInterval(requireTimer);
+    }, 1000);
+    // SPA doi trang thi kiem tra lai dinh ky (chunk co the nap lai).
+    setInterval(tryPatchViaRequire, 15000);
   }
 
   /* ================================================================
@@ -842,15 +893,19 @@
     var render = function () {
       var page = false;
       var seen = 0;
+      var reqPatched = false;
       try {
         page = !!unsafeWindow.__fbDlPageHook;
         seen = unsafeWindow.__fbDlPlayerSeen || 0;
+        reqPatched = !!unsafeWindow.__fbDlRequirePatched;
       } catch (e) {}
       var pBtns = document.querySelectorAll('.fbdl-download-btn').length;
       var dBtns = document.querySelectorAll('.fbdl-dom-btn').length;
       badge.textContent =
-        'FB-DL v1.5.0 · lớp trang: ' +
+        'FB-DL v1.6.0 · lớp trang: ' +
         (page ? 'SỐNG' : 'CHẾT') +
+        ' · vá require: ' +
+        (reqPatched ? 'CÓ' : 'CHƯA') +
         ' · player đã vá: ' +
         seen +
         ' · nút: ' +
