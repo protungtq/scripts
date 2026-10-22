@@ -3,7 +3,7 @@
 // @name:en      Facebook HD Video Downloader
 // @namespace    https://so1.asia/
 // @homepageURL  https://so1.asia/
-// @version      1.6.0
+// @version      1.7.0
 // @description  Gắn nút tải vào mọi video trên Facebook (Feed, Watch, Reel và cả Story). Kiến trúc 3 lớp như extension: lớp chạy trong trang vá trình phát VideoPlayerRelay để lấy ID và link HD qua GraphQL nội bộ, lớp Tampermonkey nhận link và tải file xuống; thêm tầng quét thẻ video dự phòng cho mọi video trên màn hình.
 // @description:en Adds a download button to every Facebook video (Feed, Watch, Reels and Stories). A page-context layer patches the VideoPlayerRelay player to fetch HD URLs via Facebook's internal GraphQL, the userscript layer downloads the file, plus a DOM fallback for any on-screen video.
 // @author       Game8
@@ -237,7 +237,8 @@
     }
 
     function patchModule(moduleName, moduleArgs, wrapper) {
-      if (!moduleArgs || moduleArgs[0] !== moduleName) return;
+      var name = moduleArgs && moduleArgs[0];
+      if (typeof name !== 'string' || name.indexOf(moduleName) === -1) return;
       var originalFactory = moduleArgs[2];
       if (typeof originalFactory !== 'function') return;
       moduleArgs[2] = function () {
@@ -261,7 +262,7 @@
     }
 
     function installPatch(self, moduleArgs) {
-      patchModule('VideoPlayerRelay.react', moduleArgs, wrapVideoPlayer);
+      patchModule('VideoPlayerRelay', moduleArgs, wrapVideoPlayer);
     }
 
     // Hook __d hai lớp, giống extension: đã có hàm thì bọc luôn,
@@ -269,6 +270,14 @@
     var patches = [installPatch];
     var originalDefine;
     function runPatches(self, args) {
+      window.__fbDlDefines = (window.__fbDlDefines || 0) + 1;
+      try {
+        var nm = args && args[0];
+        if (typeof nm === 'string' && /video|player|relay|tahoe|watch/i.test(nm)) {
+          var seenNames = (window.__fbDlVideoModules = window.__fbDlVideoModules || []);
+          if (seenNames.indexOf(nm) === -1 && seenNames.length < 40) seenNames.push(nm);
+        }
+      } catch (e) {}
       try {
         for (var i = 0; i < patches.length; i++) patches[i](self, args);
       } catch (e) {
@@ -306,14 +315,46 @@
     // (module trinh phat thuong da dinh nghia xong truoc khi moc toi),
     // nen ta doi xuat khau mac dinh cua module ngay trong registry:
     // moi trinh phat mo ra sau do deu dung ban da va.
+    var REQUIRE_CANDIDATES = ['VideoPlayerRelay.react', 'VideoPlayerRelay', 'CometVideoPlayerRelay.react'];
     function tryPatchViaRequire() {
-      var mod = null;
-      try {
-        mod = window.require('VideoPlayerRelay.react');
-      } catch (e) {
+      if (typeof window.require !== 'function') {
+        window.__fbDlRequireReport = 'window.require khong phai function (' + typeof window.require + ')';
         return false;
       }
-      if (!mod || typeof mod !== 'object' || typeof mod.default !== 'function') return false;
+      var mod = null;
+      var usedName = '';
+      var report = [];
+      for (var ci = 0; ci < REQUIRE_CANDIDATES.length; ci++) {
+        var cand = REQUIRE_CANDIDATES[ci];
+        try {
+          var got = window.require(cand);
+          if (got) {
+            report.push(cand + ' -> ' + typeof got);
+            if (!mod) {
+              mod = got;
+              usedName = cand;
+            }
+          } else {
+            report.push(cand + ' -> rong');
+          }
+        } catch (e) {
+          report.push(cand + ' -> THROW: ' + (e && e.message ? String(e.message).slice(0, 60) : e));
+        }
+      }
+      window.__fbDlRequireReport = report.join(' | ');
+      if (!mod) return false;
+      if (typeof mod === 'function') {
+        window.__fbDlRequireReport += ' || dang function, khong co .default de thay';
+        return false;
+      }
+      if (typeof mod !== 'object' || typeof mod.default !== 'function') {
+        var keys = '';
+        try {
+          keys = Object.keys(mod).slice(0, 10).join(',');
+        } catch (e) {}
+        window.__fbDlRequireReport += ' || ' + usedName + ' keys: ' + keys;
+        return false;
+      }
       var original = mod.default;
       if (original.__fbDlWrapped) {
         window.__fbDlRequirePatched = true;
@@ -886,24 +927,54 @@
       'position:fixed;left:12px;bottom:12px;z-index:2147483647;background:rgba(17,24,39,.92);' +
       'color:#d1fae5;font:12px/1.5 ui-monospace,monospace;padding:6px 10px;border-radius:8px;' +
       'cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4)';
+    var panel = document.createElement('div');
+    panel.id = 'fbdl-panel';
+    panel.style.cssText =
+      'position:fixed;left:12px;bottom:52px;z-index:2147483647;background:rgba(17,24,39,.96);' +
+      'color:#e5e7eb;font:11px/1.6 ui-monospace,monospace;padding:10px 12px;border-radius:8px;' +
+      'max-width:72vw;max-height:50vh;overflow:auto;white-space:pre-wrap;word-break:break-all;' +
+      'box-shadow:0 4px 16px rgba(0,0,0,.4);display:none';
+    document.documentElement.appendChild(panel);
+    function refreshPanel() {
+      var names = [];
+      var rep = '';
+      try {
+        names = unsafeWindow.__fbDlVideoModules || [];
+        rep = unsafeWindow.__fbDlRequireReport || '(chua co bao cao)';
+      } catch (e) {}
+      panel.textContent =
+        'Module lien quan video/player da thay nap:\n' +
+        (names.length ? names.join('\n') : '(khong thay ten nao)') +
+        '\n\nBao cao require:\n' +
+        rep;
+    }
     badge.addEventListener('click', function () {
-      badge.remove();
+      if (panel.style.display === 'none') {
+        refreshPanel();
+        panel.style.display = 'block';
+      } else {
+        panel.style.display = 'none';
+      }
     });
     document.documentElement.appendChild(badge);
     var render = function () {
       var page = false;
       var seen = 0;
       var reqPatched = false;
+      var defines = 0;
       try {
         page = !!unsafeWindow.__fbDlPageHook;
         seen = unsafeWindow.__fbDlPlayerSeen || 0;
         reqPatched = !!unsafeWindow.__fbDlRequirePatched;
+        defines = unsafeWindow.__fbDlDefines || 0;
       } catch (e) {}
       var pBtns = document.querySelectorAll('.fbdl-download-btn').length;
       var dBtns = document.querySelectorAll('.fbdl-dom-btn').length;
       badge.textContent =
-        'FB-DL v1.6.0 · lớp trang: ' +
+        'FB-DL v1.7.0 · lớp trang: ' +
         (page ? 'SỐNG' : 'CHẾT') +
+        ' · def: ' +
+        defines +
         ' · vá require: ' +
         (reqPatched ? 'CÓ' : 'CHƯA') +
         ' · player đã vá: ' +
